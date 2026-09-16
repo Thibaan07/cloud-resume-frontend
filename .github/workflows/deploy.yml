@@ -1,5 +1,7 @@
 name: Deploy Resume to S3 and CloudFront
 
+# Trigger: this workflow runs automatically every time code is pushed to
+# the main branch — no manual "deploy" step needed
 on:
   push:
     branches:
@@ -7,12 +9,17 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # GitHub spins up a fresh Ubuntu VM to run these steps
 
     steps:
+      # Step 1: pull the repo's code onto that fresh VM — without this,
+      # the runner has nothing to work with
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 2: log the runner into AWS using credentials stored as GitHub
+      # Secrets (never hardcoded in the file — that's the whole point of
+      # using ${{ secrets.X }} instead of pasting real keys here)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -20,8 +27,19 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      # Step 3: sync uploads the repo's files to the S3 bucket. "sync" (not
+      # "cp") means it only uploads files that changed and deletes files in
+      # S3 that no longer exist in the repo — keeps the bucket matching the
+      # repo exactly. The --exclude flags stop .git internals and the
+      # workflow file itself from being uploaded — only the actual site
+      # content should end up in the bucket.
       - name: Upload to S3
         run: aws s3 sync . s3://${{ secrets.S3_BUCKET_NAME }} --exclude ".git/*" --exclude ".github/*"
 
+      # Step 4: this is the fix for the CloudFront caching problem —
+      # uploading to S3 alone doesn't update what CloudFront serves, since
+      # CloudFront still has the old version cached at its edge locations.
+      # "--paths /*" tells CloudFront to throw out its entire cache and
+      # re-fetch fresh content from S3 on the next request.
       - name: Invalidate CloudFront cache
         run: aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
